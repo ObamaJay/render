@@ -1,3 +1,26 @@
+import os
+import requests
+import stripe
+from flask import Flask, request, jsonify
+from supabase import create_client
+
+# --- Flask app ---
+app = Flask(__name__)
+
+# --- Config ---
+stripe.api_key = os.getenv("STRIPE_SECRET_KEY")
+STRIPE_WEBHOOK_SECRET = os.getenv("STRIPE_WEBHOOK_SECRET")
+SUPABASE_URL = os.getenv("SUPABASE_URL")
+SUPABASE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
+RESEND_API_KEY = os.getenv("RESEND_API_KEY")
+FROM_EMAIL = os.getenv("FROM_EMAIL")
+TABLE_NAME = os.getenv("TABLE_NAME", "leads")
+BUCKET = os.getenv("BUCKET", "casefiles")
+
+supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
+
+# utility imports (generate_pdf, upload_to_supabase, strip_non_latin1)
+from utils import generate_pdf, upload_to_supabase, strip_non_latin1
 @app.route("/webhook", methods=["POST"])
 def webhook_received():
     payload = request.data
