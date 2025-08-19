@@ -37,26 +37,20 @@ def strip_non_latin1(text: str) -> str:
     return (text or "").encode("latin1", "ignore").decode("latin1")
 
 def normalize_spaces(s: str) -> str:
-    # Convert NBSP to normal space; tabs to single space; collapse extreme dashes/underscores
-    s = s.replace("\xa0", " ")
-    s = s.replace("\t", " ")
+    # NBSP → space, tabs → single space, drop control chars, soften long runs of dashes/underscores
+    s = (s or "").replace("\xa0", " ").replace("\t", " ")
     s = CTRL_RE.sub("", s)
-    # Soften long dash/underscore runs
     s = re.sub(r"([-–—_])\1{9,}", lambda m: " ".join([m.group(1)*10] * (len(m.group(0)) // 10 + 1)), s)
     return s
 
 def soften_long_tokens(s: str, max_len: int = 40) -> str:
-    """
-    Insert spaces inside any run of non‑whitespace characters longer than max_len
-    so FPDF can wrap it (prevents 'Not enough horizontal space...' errors).
-    """
-    def chunker(match: re.Match) -> str:
-        w = match.group(0)
+    """Insert spaces inside any run of non‑whitespace longer than max_len so FPDF can wrap."""
+    def chunker(w: str) -> str:
         return " ".join(w[i:i + max_len] for i in range(0, len(w), max_len))
-    # Special-case URLs to ensure breaks
-    s = re.sub(r"(https?://\S+)", lambda m: chunker(m), s)
-    # Generic long tokens
-    return re.sub(r"\S{" + str(max_len) + r",}", chunker, s)
+    # Break URLs first
+    s = re.sub(r"(https?://\S+)", lambda m: chunker(m.group(0)), s)
+    # Then any long token
+    return re.sub(r"\S{" + str(max_len) + r",}", lambda m: chunker(m.group(0)), s)
 
 def sanitize_text(text: str) -> str:
     t = strip_non_latin1(text or "")
@@ -65,31 +59,42 @@ def sanitize_text(text: str) -> str:
     return t
 
 # ---------------- PDF helpers ----------------
-def safe_multicell(pdf: FPDF, line: str, line_height: float = 7.0):
+def safe_multicell(pdf: FPDF, line: str, line_height: float, avail_w: float):
     """
-    Write a line with multi_cell; if fpdf still complains, force-wrap the text in fixed chunks.
+    Try multi_cell; if fpdf still complains, fall back to fixed-size cell chunks.
     """
     try:
-        pdf.multi_cell(w=0, h=line_height, txt=line)
+        pdf.set_x(pdf.l_margin)  # ensure we start from the left margin
+        pdf.multi_cell(w=avail_w, h=line_height, txt=line)
     except Exception:
-        # As a last resort, hard-chunk the line so it can't fail
+        # Final fallback: hard chunk and write via non-wrapping cell
         chunk = 60
-        for i in range(0, len(line), chunk):
-            pdf.multi_cell(w=0, h=line_height, txt=line[i:i+chunk])
+        i = 0
+        while i < len(line):
+            piece = line[i:i+chunk]
+            pdf.set_x(pdf.l_margin)
+            # cell() does not wrap; it won't raise the single-character width error
+            pdf.cell(w=avail_w, h=line_height, txt=piece, ln=1)
+            i += chunk
 
 def generate_pdf(text: str) -> str:
     """Create a PDF from text and return a temp file path."""
     safe_text = sanitize_text(text)
 
     pdf = FPDF()
-    pdf.set_auto_page_break(auto=True, margin=15)
+    pdf.set_margins(left=12, top=12, right=12)  # explicit margins to get a predictable width
+    pdf.set_auto_page_break(auto=True, margin=12)
     pdf.add_page()
-    # Slightly smaller font to increase available width per glyph
+    # Slightly smaller font to increase per-glyph width headroom
     pdf.set_font("Arial", size=10)
 
+    # Compute explicit available width (avoid w=0 surprises)
+    avail_w = pdf.w - pdf.l_margin - pdf.r_margin
+    line_h = 7.0
+
     for raw_line in safe_text.splitlines():
-        line = sanitize_text(raw_line)  # per-line just in case
-        safe_multicell(pdf, line, line_height=7.0)
+        line = sanitize_text(raw_line)  # per-line sanitize, just in case
+        safe_multicell(pdf, line, line_h, avail_w)
 
     tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".pdf")
     pdf.output(tmp.name)
