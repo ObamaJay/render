@@ -30,9 +30,20 @@ BUCKET = os.getenv("BUCKET", "casefiles")
 stripe.api_key = STRIPE_SECRET_KEY
 supabase = create_client(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
 
-# ---------------- Helpers ----------------
+# ---------------- Text helpers ----------------
+CTRL_RE = re.compile(r"[\x00-\x08\x0B\x0C\x0E-\x1F]")  # strip control chars (keep \t \n \r)
+
 def strip_non_latin1(text: str) -> str:
     return (text or "").encode("latin1", "ignore").decode("latin1")
+
+def normalize_spaces(s: str) -> str:
+    # Convert NBSP to normal space; tabs to single space; collapse extreme dashes/underscores
+    s = s.replace("\xa0", " ")
+    s = s.replace("\t", " ")
+    s = CTRL_RE.sub("", s)
+    # Soften long dash/underscore runs
+    s = re.sub(r"([-–—_])\1{9,}", lambda m: " ".join([m.group(1)*10] * (len(m.group(0)) // 10 + 1)), s)
+    return s
 
 def soften_long_tokens(s: str, max_len: int = 40) -> str:
     """
@@ -42,20 +53,43 @@ def soften_long_tokens(s: str, max_len: int = 40) -> str:
     def chunker(match: re.Match) -> str:
         w = match.group(0)
         return " ".join(w[i:i + max_len] for i in range(0, len(w), max_len))
+    # Special-case URLs to ensure breaks
+    s = re.sub(r"(https?://\S+)", lambda m: chunker(m), s)
+    # Generic long tokens
     return re.sub(r"\S{" + str(max_len) + r",}", chunker, s)
+
+def sanitize_text(text: str) -> str:
+    t = strip_non_latin1(text or "")
+    t = normalize_spaces(t)
+    t = soften_long_tokens(t, max_len=40)
+    return t
+
+# ---------------- PDF helpers ----------------
+def safe_multicell(pdf: FPDF, line: str, line_height: float = 7.0):
+    """
+    Write a line with multi_cell; if fpdf still complains, force-wrap the text in fixed chunks.
+    """
+    try:
+        pdf.multi_cell(w=0, h=line_height, txt=line)
+    except Exception:
+        # As a last resort, hard-chunk the line so it can't fail
+        chunk = 60
+        for i in range(0, len(line), chunk):
+            pdf.multi_cell(w=0, h=line_height, txt=line[i:i+chunk])
 
 def generate_pdf(text: str) -> str:
     """Create a PDF from text and return a temp file path."""
-    safe_text = strip_non_latin1(text)
-    safe_text = soften_long_tokens(safe_text, max_len=40)
+    safe_text = sanitize_text(text)
 
     pdf = FPDF()
     pdf.set_auto_page_break(auto=True, margin=15)
     pdf.add_page()
-    pdf.set_font("Arial", size=11)
+    # Slightly smaller font to increase available width per glyph
+    pdf.set_font("Arial", size=10)
 
-    for line in safe_text.splitlines():
-        pdf.multi_cell(w=0, h=7, txt=line)
+    for raw_line in safe_text.splitlines():
+        line = sanitize_text(raw_line)  # per-line just in case
+        safe_multicell(pdf, line, line_height=7.0)
 
     tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".pdf")
     pdf.output(tmp.name)
@@ -64,7 +98,7 @@ def generate_pdf(text: str) -> str:
 def upload_to_supabase(local_path: str, visa_type: str) -> str:
     """Upload file to Supabase Storage and return a 1‑hour signed URL."""
     ts = datetime.datetime.utcnow().strftime("%Y%m%d%H%M%S")
-    object_name = f"{strip_non_latin1(visa_type or 'Checklist')}_{ts}.pdf"
+    object_name = f"{sanitize_text(visa_type or 'Checklist')}_{ts}.pdf"
     with open(local_path, "rb") as f:
         supabase.storage.from_(BUCKET).upload(object_name, f, {"content-type": "application/pdf"})
     signed = supabase.storage.from_(BUCKET).create_signed_url(object_name, 3600)
@@ -76,8 +110,8 @@ def send_resend_email(to_email: str, petitioner: str, visa_type: str, signed_url
         "to": to_email,
         "subject": "Your ImmigrAI USCIS Checklist",
         "html": (
-            f"<p>Hi {strip_non_latin1(petitioner or 'there')},</p>"
-            f"<p>Here is your personalized checklist for your {strip_non_latin1(visa_type or 'visa')} application.</p>"
+            f"<p>Hi {sanitize_text(petitioner or 'there')},</p>"
+            f"<p>Here is your personalized checklist for your {sanitize_text(visa_type or 'visa')} application.</p>"
             f'<p><a href="{signed_url}">Click here to download your checklist PDF</a></p>'
             "<br><p>Best,<br>The ImmigrAI Team</p>"
         ),
@@ -154,7 +188,7 @@ def stripe_webhook():
 
         print("Generating PDF for visa_type:", visa_type)
 
-        # 3) Generate PDF
+        # 3) Generate PDF (hardened)
         pdf_path = generate_pdf(text)
 
         # 4) Upload + sign URL
