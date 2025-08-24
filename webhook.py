@@ -158,7 +158,7 @@ def build_email_html(download_link: str, visa_type: str) -> str:
 <html>
   <body style="font-family: Arial, sans-serif; color:#333; line-height:1.6; max-width:600px; margin:auto; padding:20px; border:1px solid #eee; border-radius:8px;">
     <div style="text-align:center; margin-bottom:20px;">
-      <img src="https://immigrai.org/logo.png" alt="ImmigrAI" style="height:50px;">
+      <img src="https://jdkfxiftaleaxobenwiy.supabase.co/storage/v1/object/public/public-assets/logo.svg" alt="ImmigrAI" style="height:50px;">
     </div>
     <h2 style="color:#2c3e50;">Your USCIS Checklist is Ready</h2>
     <p>Thank you for using <strong>ImmigrAI</strong>. We’ve generated your personalized checklist for the <strong>{sanitize_text(visa_type)}</strong> visa type.</p>
@@ -197,12 +197,15 @@ def send_resend_email(to_email: str, petitioner: str, visa_type: str, signed_url
     html = build_email_html(signed_url, visa_type)
     text = build_email_text(signed_url, visa_type)
     payload = {
-        "from": f"ImmigrAI <{FROM_EMAIL}>",
+        "from": f"{os.getenv('FROM_NAME','ImmigrAI')} <{FROM_EMAIL}>",
         "to": to_email,
         "subject": f"Your USCIS Checklist is Ready – {sanitize_text(visa_type)}",
         "html": html,
         "text": text,
+        "reply_to": [os.getenv("REPLY_TO", "support@immigrai.org")],
+        "tags": [{"name": "type", "value": "checklist_ready"}],
     }
+
     r = requests.post(
         "https://api.resend.com/emails",
         headers={"Authorization": f"Bearer {RESEND_API_KEY}", "Content-Type": "application/json"},
