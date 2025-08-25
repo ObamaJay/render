@@ -66,7 +66,8 @@ def add_cover_page(pdf: FPDF, visa_type: str, petitioner: str, beneficiary: str)
 
     # Title
     pdf.set_font("Arial", "B", 18)
-    pdf.cell(0, 12, "ImmigrAI – USCIS Case Checklist", ln=1, align="C")
+    title = sanitize_text("ImmigrAI - USCIS Case Checklist")
+    pdf.cell(0, 12, title, ln=1, align="C")
 
     pdf.set_font("Arial", "", 12)
     pdf.ln(6)
@@ -199,12 +200,13 @@ def send_resend_email(to_email: str, petitioner: str, visa_type: str, signed_url
     payload = {
         "from": f"{os.getenv('FROM_NAME','ImmigrAI')} <{FROM_EMAIL}>",
         "to": to_email,
-        "subject": f"Your USCIS Checklist is Ready – {sanitize_text(visa_type)}",
+        "subject": f"Your USCIS Checklist is Ready - {sanitize_text(visa_type)}",
         "html": html,
         "text": text,
         "reply_to": [os.getenv("REPLY_TO", "support@immigrai.org")],
         "tags": [{"name": "type", "value": "checklist_ready"}],
     }
+
 
     r = requests.post(
         "https://api.resend.com/emails",
